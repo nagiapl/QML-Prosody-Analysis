@@ -1,0 +1,700 @@
+---
+title: "Emotional Prosody Analysis: F0 Variation in CREMA-D"
+format:
+  pdf:
+    include-in-header:
+      text: |
+        \usepackage{float}
+        \usepackage{makecell}
+editor: visual
+bibliography: references.bib
+---
+
+```{r setup}
+#| include: false
+#| message: false
+#| warning: false
+
+# Load all required packages
+library(tidyverse)
+library(knitr)
+library(kableExtra)
+library(gridExtra)
+library(brms)
+library(bayesplot)
+library(posterior)
+library(ggdist)
+library(kableExtra)
+
+
+# Set global knitr options
+knitr::opts_chunk$set(
+  echo = FALSE,
+  message = FALSE,
+  warning = FALSE
+)
+
+# Load data once for entire document
+crema_data <- read_csv("crema_d_with_f0.csv", show_col_types = FALSE)
+```
+
+## Introduction
+
+The emotional state of a speaker modulates speech production, and fundamental frequency (F0) is one of the primary acoustic correlates where this modulation is reflected. The relationship between F0 and emotional expression has been extensively studied and remains an active area of research. Examining how emotion is represented in speech provides insight into human psychology and communication. Concurrently, advances in speech technology focus on accurately modeling emotional prosody in text-to-speech systems and voice assistants to increase the naturalness of synthesized voices. Changes in F0 are associated with emotional intensity across diverse languages, and understanding its variations due to emotional intensity provides a foundation for accurately modeling emotion in such systems.
+
+However, emotion is not the only factor that affects F0, and interactions between emotion and other predictors require further examination. Baseline F0 differs systematically across demographic groups, particularly between biological sexes. These baseline differences are crucial to consider when modeling emotional variation in pitch to control for potential confounding effects. In this study, we conduct a statistical analysis to compare mean F0 values across different emotional categories and between male and female adult speakers. This allows us to examine how **emotion** and **speaker sex** jointly influence vocal pitch in a large, demographically diverse corpus of emotional speech. With a Bayesian regression approach we quantify both the main effects of these factors and their interaction, providing insight into whether emotional modulation of F0 differs between male and female speakers. According to our findings, females consistently exhibit a higher F0 compared to male speakers and also larger pitch increases from a neutral baseline when in high-arousal emotional states, indicating that emotional modulation of F0 differs between sexes.
+
+As a secondary contribution, we present a curated dataset containing demographic information, acoustic features (mean F0, standard deviation, and interquartile range), and metadata for 7,442 emotional speech samples from the CREMA-D corpus. This dataset is publicly available and can be used for future research and pedagogical purposes in the Quantitative Methods for Linguistics and English Language Course.
+
+## Background
+
+Numerous studies have demonstrated that F0, as a primary acoustic correlate of emotional expression, varies systematically across distinct emotions: high-arousal emotional states such as anger, happiness, and fear tend to increase mean F0 compared to low-arousal states like disgust, sadness and neutrality [@banse1996]. At the same time, biological sex is a well-established factor that significantly influences baseline F0: adult females typically exhibit higher mean F0 than males due to anatomical differences in the size of vocal folds [@Benesty2008].
+
+While these baseline sex differences are robust and well-documented, comparatively fewer studies systematically examine the **interaction** between sex and emotional modulation of F0. Some research indicates that although both sexes show similar trends in F0 changes with emotion, the magnitude of these changes may vary. Females, for example, exhibit larger fluctuations in pitch in intense emotional speech [@scherer2003].
+
+Most research investigates how emotional states affect F0 across sexes, but little work has systematically examined whether emotional modulation differs between males and females. Findings remain inconclusive and inconsistent. Specifically, some studies report significant results regarding sex differences in emotional modulation [@banse1996], whereas others report no such effects after appropriate controls [@viscovich2003]. Moreover, existing research is often limited by small sample sizes ([@viscovich2003], [@banse1996], [@scherer2003]). As a result, there are still open questions about how biological sex shapes emotional prosody.
+
+## Data
+
+### Corpus and Speakers
+
+For this research, CREMA-D (Crowd-sourced Emotional Multimodal Actors Dataset) was used. CREMA-D is a publicly corpus designed for emotion recognition research, consisting of 7,442 samples of audio from 91 professional actors from a range of demographic backgrounds. These actors were asked to repeat 12 sentences across a range of emotions and emotional intensities. The sentences were designed to be emotionally-neutral in their linguistic content, allowing for emotional information to be primarily conveyed through prosody, rather than semantics.
+
+The 12 sentences are represented in (@tbl-sentences), as follows:
+
+```{r}
+#| label: tbl-sentences
+#| tbl-cap: "CREMA-D sentence codes with sentences"
+
+# Extract unique sentence codes and sentences
+sentences_df <- crema_data %>%
+  select(SentenceCode, Sentence) %>%
+  distinct() %>%
+  arrange(SentenceCode) %>%
+  rename(Code = SentenceCode)
+
+# Create the table
+kable(sentences_df, 
+      format = "pipe",
+      align = c("l", "l")) %>%
+  kable_styling(full_width = FALSE)
+```
+
+Each sentence was repeated by each individual with the intent of conveying six different emotions (anger, disgust, fear, happiness, sadness, and neutrality) across four intensity levels (low, medium, high, and unspecified). Consequently, this dataset contains both subtle and exaggerated versions of each expression, for each emotion type.
+
+Audio files were recorded at a 16 kHz sampling rate, in WAV format. Over 95% of clips possess 7 independent ratings from human annotators; the audio-only subsection of the dataset (used for this research) possesses an overall human recognition accuracy of 40.9%, reflecting substantial variability and ambiguity in emotional expression across the data.
+
+The corpus includes speakers from a range of demographic backgrounds (@fig-demographics), making it well-suited for studying how emotional prosody interacts with speaker demographics.
+
+```{r}
+#| label: fig-demographics
+#| fig-cap: "Demographic distribution of actors in CREMA-D corpus"
+#| fig-width: 12
+#| fig-height: 5
+#| fig-align: center
+
+# Get unique actors
+actor_demographics <- crema_data %>%
+  select(ActorID, Age, Sex, Race) %>%
+  distinct()
+
+# Create age groups (decade-based)
+actor_demographics <- actor_demographics %>%
+  mutate(AgeGroup = case_when(
+    Age >= 20 & Age <= 29 ~ "20-29",
+    Age >= 30 & Age <= 39 ~ "30-39",
+    Age >= 40 & Age <= 49 ~ "40-49",
+    Age >= 50 & Age <= 59 ~ "50-59",
+    Age >= 60 ~ "60+",
+    TRUE ~ "Other"
+  )) %>%
+  mutate(AgeGroup = factor(AgeGroup, levels = c("20-29", "30-39", "40-49", "50-59", "60+")))
+
+# Gender distribution
+p1 <- actor_demographics %>%
+  count(Sex) %>%
+  ggplot(aes(x = Sex, y = n, fill = Sex)) +
+  geom_col(width = 0.6) +
+  geom_text(aes(label = n), vjust = -0.5, size = 4) +
+  scale_fill_manual(values = c("Female" = "#E78AC3", "Male" = "#8DA0CB")) +
+  labs(title = "Gender", x = NULL, y = "Actor Count") +
+  theme_minimal() +
+  theme(legend.position = "none",
+        plot.title = element_text(hjust = 0.5, face = "bold"))
+
+# Age distribution
+p2 <- actor_demographics %>%
+  count(AgeGroup) %>%
+  ggplot(aes(x = AgeGroup, y = n, fill = AgeGroup)) +
+  geom_col(width = 0.6) +
+  geom_text(aes(label = n), vjust = -0.5, size = 4) +
+  scale_fill_brewer(palette = "Set2") +
+  labs(title = "Age Group", x = NULL, y = "Actor Count") +
+  theme_minimal() +
+  theme(legend.position = "none",
+        plot.title = element_text(hjust = 0.5, face = "bold"),
+        axis.text.x = element_text(angle = 20, hjust = 1))
+
+# Ethnicity distribution
+p3 <- actor_demographics %>%
+  count(Race) %>%
+  mutate(Race = fct_reorder(Race, n)) %>%
+  ggplot(aes(x = Race, y = n, fill = Race)) +
+  geom_col(width = 0.6) +
+  geom_text(aes(label = n), vjust = -0.5, size = 4) +
+  scale_fill_brewer(palette = "Pastel1") +
+  labs(title = "Ethnicity/Race", x = NULL, y = "Actor Count") +
+  theme_minimal() +
+  theme(legend.position = "none",
+        plot.title = element_text(hjust = 0.5, face = "bold"),
+        axis.text.x = element_text(angle = 20, hjust = 1))
+
+# Combine plots
+grid.arrange(p1, p2, p3, ncol = 3)
+```
+
+### Acoustic Features
+
+F0 represents the rate of vocal fold vibration, and is a key acoustic correlate of emotional prosody. Here, F0 was extracted using CREPE (Convolutional Representation for Pitch Estimation) (@kim2018crepe), a neural network-based pitch tracking system known to perform well on noisy audio data. For each recording, four summary statistics were recorded (@tbl-f0-features):
+
+```{r}
+#| label: tbl-f0-features
+#| tbl-cap: "Extracted F0 features for statistical analysis"
+
+features_df <- data.frame(
+  Feature = c("Mean F0 (Hz)", 
+              "Standard Deviation (Hz)", 
+              "Interquartile Range (Hz)", 
+              "Mean Confidence"),
+  Description = c(
+    "Average pitch level",
+    "Pitch variability",
+    "Robust measure of pitch spread",
+    "Extraction quality indicator"
+  ),
+  `Emotional Relevance` = c(
+    "High-arousal emotions raise pitch; sadness lowers it",
+    "Greater variability indicates higher arousal",
+    "Captures expressiveness while handling outliers",
+    "Used for quality control"
+  )
+)
+
+kable(features_df, 
+      format = "pipe",
+      align = c("l", "l", "l"))
+```
+
+The chosen features capture the central tendency and the variability of pitch — both qualities are theoretically-motivated correlates of emotional state within speech [@juslin2003; @banse1996].
+
+## Methodology
+
+### Data Preparation and Transformation
+
+F0 is positively skewed, as pitch cannot be negative. Furthermore, in humans, pitch is perceived non-linearly, with cochlear filter-banks operating on a logarithmic scale. Therefore log(meanF0) values were calculated and used during exploratory data analysis.
+
+```{r data-prep}
+# Add factor coding and log transformation to existing data
+crema_data <- crema_data %>%
+  mutate(
+    Sex     = factor(Sex),
+    Emotion = factor(Emotion),
+    Emotion = fct_relevel(Emotion, "Neutral"),  # Set neutral as reference level
+    Race    = factor(Race),
+    log_meanF0 = log(meanF0)  # Log-transform F0
+  )
+```
+
+### Exploratory Analysis
+
+Before formal statistical modeling, the distribution of log-transformed F0 was examined, across emotions and demographic factors, to identify potential patterns and assess data quality.
+
+#### Distribution of F0 by Emotion
+
+@fig-f0-emotion-density displays the overall distribution of log F0 across the emotion categories. The distributions possess substantial overlap, reflecting substantial variability in natural pitch variability emotional expression present in CREMA-D.
+
+```{r}
+#| label: fig-f0-emotion-density
+#| fig-cap: "Density distributions of log-transformed mean F0 by emotion"
+#| fig-width: 10
+#| fig-height: 5
+#| fig-align: center
+
+crema_data %>% 
+  ggplot(aes(log_meanF0, fill = Emotion)) +
+  geom_density(alpha = 0.7) +
+  geom_rug(alpha = 0.1) +
+  scale_fill_brewer(palette = "Set3") +
+  labs(
+    title = "Distribution of Log Mean F0 Across Emotions",
+    x = "Log Mean F0 (Hz)", 
+    y = "Density"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "top",
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14)
+  )
+```
+
+@fig-f0-emotion-violin provides a complementary view with violin plots and boxplots, showing differences in central tendency and spread across emotions.
+
+```{r}
+#| label: fig-f0-emotion-violin
+#| fig-cap: "Distribution of log-transformed mean F0 across emotions"
+#| fig-width: 10
+#| fig-height: 6
+#| fig-align: center
+
+crema_data %>%
+  ggplot(aes(x = Emotion, y = log_meanF0, fill = Emotion)) +
+  geom_violin(alpha = 0.7, trim = FALSE) +
+  geom_boxplot(width = 0.12, outlier.shape = NA, colour = "black") +
+  coord_flip() +
+  scale_fill_brewer(palette = "Set3") +
+  labs(
+    title = "Log Mean F0 by Emotion",
+    x = "Emotion", 
+    y = "Log Mean F0 (Hz)"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14)
+  )
+```
+
+#### Interaction of Emotion and Gender
+
+Given documented sex differences in F0 due to morphological (vocal tract) differences, this study aimed to examine how emotional modulation of pitch varies by speaker sex. @fig-f0-emotion-sex observes that while males and females differ substantially in baseline F0, pitch modulation by emotion appear to follow broadly similar trends across sexes.
+
+```{r}
+#| label: fig-f0-emotion-sex
+#| fig-cap: "Distribution of log-transformed mean F0 across emotions, separated by speaker sex"
+#| fig-width: 10
+#| fig-height: 8
+#| fig-align: center
+
+crema_data %>%
+  ggplot(aes(x = Emotion, y = log_meanF0, fill = Emotion)) +
+  geom_violin(trim = FALSE, alpha = 0.7) +
+  geom_boxplot(width = 0.12, outlier.shape = NA, colour = "black") +
+  scale_fill_brewer(palette = "Set3") +
+  coord_flip() +
+  facet_wrap(~ Sex, ncol = 1) +
+  labs(
+    title = "Log Mean F0 by Emotion and Speaker Sex",
+    x = "Emotion", 
+    y = "Log Mean F0 (Hz)"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+    strip.text = element_text(face = "bold", size = 12)
+  )
+```
+
+#### Demographic Factors
+
+We also examined F0 variation across age groups and racial/ethnic backgrounds to assess whether these factors should be considered in statistical modeling.
+
+```{r}
+#| label: fig-f0-age
+#| fig-cap: "Distribution of log-transformed mean F0 across age groups"
+#| fig-width: 10
+#| fig-height: 6
+#| fig-align: center
+
+# Create age groups for visualization
+crema_data_with_age <- crema_data %>%
+  mutate(AgeGroup = case_when(
+    Age >= 20 & Age <= 29 ~ "20-29",
+    Age >= 30 & Age <= 39 ~ "30-39",
+    Age >= 40 & Age <= 49 ~ "40-49",
+    Age >= 50 & Age <= 59 ~ "50-59",
+    Age >= 60 ~ "60+",
+    TRUE ~ "Other"
+  )) %>%
+  mutate(AgeGroup = factor(AgeGroup, levels = c("20-29", "30-39", "40-49", "50-59", "60+")))
+
+crema_data_with_age %>%
+  ggplot(aes(x = AgeGroup, y = log_meanF0, fill = AgeGroup)) +
+  geom_violin(alpha = 0.7, trim = FALSE) +
+  geom_boxplot(width = 0.12, outlier.shape = NA, colour = "black") +
+  coord_flip() +
+  scale_fill_brewer(palette = "Set2") +
+  labs(
+    title = "Log Mean F0 by Age Group",
+    x = "Age Group", 
+    y = "Log Mean F0 (Hz)"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14)
+  )
+```
+
+```{r}
+#| label: fig-f0-race
+#| fig-cap: "Distribution of log-transformed mean F0 across racial/ethnic groups"
+#| fig-width: 10
+#| fig-height: 6
+#| fig-align: center
+
+crema_data %>%
+  mutate(Race = fct_reorder(Race, log_meanF0, .fun = median)) %>%
+  ggplot(aes(x = Race, y = log_meanF0, fill = Race)) +
+  geom_violin(alpha = 0.7, trim = FALSE) +
+  geom_boxplot(width = 0.12, outlier.shape = NA, colour = "black") +
+  coord_flip() +
+  scale_fill_brewer(palette = "Pastel1") +
+  labs(
+    title = "Log Mean F0 by Race/Ethnicity",
+    x = "Race/Ethnicity", 
+    y = "Log Mean F0 (Hz)"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14)
+  )
+```
+
+While age and race show some variation in F0, our primary research question focuses on how **emotion** and **sex** jointly influence pitch production. Therefore the statistical model presented in this research centres on these two factors.
+
+### Statistical Modeling
+
+#### Model Specification
+
+For statistical analysis, a Bayesian linear regression model was implemented through the `brms` package [@burkner2017], which utilises Stan [@carpenter2017], a probabilistic programming language for statistical models, as a back-end to produce posterior probabilities.
+
+The following model formula was used:
+
+```         
+meanF0 ~ Emotion * Sex
+```
+
+This formula specifies mean F0 as the outcome variable, with Emotion and Sex as categorical predictors. It is equivalent to `meanF0 ~ Emotion + Sex + Emotion:Sex`, modelling the effect of both predictors and their interaction — thereby allowing for investigation of the degree of sex’s impact on the effect of emotional modulation on pitch.
+
+Emotion was coded to capture F0 differences relative to a **Neutral** reference level. Sex was coded to test the effect of emotion of F0 relative to **Female** speakers. Both predictors were coded using the default R treatment contrasts.
+
+#### Distributional Assumptions
+
+A **log-normal distribution** was assumed for the model family, meaning that F0 is modeled as following a lognormal distribution. This is equivalent to assuming that log(F0) follows a normal distribution. During model fitting, coefficient values were identified that maximized the probability of the observed data under the assumed model. The model estimates effects on the log scale internally, but predictions are automatically transformed to the original Hz scale.
+
+```{r model-fitting}
+#| echo: true
+#| results: hide
+
+# Fit the Bayesian linear regression model
+f0_bm <- brm(
+  meanF0 ~ Emotion * Sex,
+  data    = crema_data,
+  family  = lognormal,
+  cores = 4,
+  seed = 6725,
+  file = "ch_regression_f0_bm_lognormal2"
+)
+```
+
+### Regression Coefficient Summary
+
+The Bayesian regression model estimated coefficients on the log(F0) scale. @tbl-coef-summary presents the posterior means and credible intervals for all model parameters. The **Intercept** represents the baseline log(F0) for female speakers producing neutral speech (the reference levels). **Emotion** coefficients indicate log-scale shifts relative to neutral. **Sex** coefficients capture the male-female baseline difference. **Interaction terms** (Emotion:Sex) indicate how emotional modulation differs between sexes.
+
+```{r}
+#| label: tbl-coef-summary
+#| tbl-cap: "Model coefficient summary with 80% and 95% credible intervals"
+#| echo: false
+
+# Get summaries with both intervals
+summary_80 <- summary(f0_bm, prob = 0.8)$fixed
+summary_95 <- summary(f0_bm, prob = 0.95)$fixed
+
+# Combine into one table
+coef_table <- data.frame(
+  Parameter = rownames(summary_80),
+  Estimate = summary_80[, "Estimate"],
+  CI_80_lower = summary_80[, "l-80% CI"],
+  CI_80_upper = summary_80[, "u-80% CI"],
+  CI_95_lower = summary_95[, "l-95% CI"],
+  CI_95_upper = summary_95[, "u-95% CI"]
+)
+
+colnames(coef_table) <- c("Parameter", "Estimate", "80% CI Lower", "80% CI Upper", 
+                           "95% CI Lower", "95% CI Upper")
+
+kable(coef_table, digits = 3, row.names = FALSE) %>%
+  kable_styling(full_width = FALSE)
+```
+
+These coefficients are interpretable as additive effects on the log scale. For example, a coefficient of 0.10 corresponds to an approximate 10% increase in F0 when exponentiated. The predictions in Hz are obtained by exponentiating the linear combinations of these log-scale coefficients.
+
+## Results
+
+We transform the model predictions from the log scale to Hz for substantive interpretation, examining predicted F0 values across all Emotion × Sex combinations.
+
+### Predicted F0 Values on the Hz Scale
+
+We obtained posterior predictions of expected F0 for each Emotion × Sex combination in Hz, then computed emotion effects (differences from Neutral) and sex differences. All results below present posterior means with 80% and 95% credible intervals.
+
+```{r posterior-draws}
+# Extract posterior draws and calculate predictions manually from coefficients
+f0_bm_draws <- as_draws_df(f0_bm) %>% 
+  mutate(
+    f_neutral = exp(b_Intercept),
+    f_disgust = exp(b_Intercept + b_EmotionDisgust),
+    f_fear = exp(b_Intercept + b_EmotionFear),
+    f_anger = exp(b_Intercept + b_EmotionAnger),
+    f_happy = exp(b_Intercept + b_EmotionHappy),
+    f_sad = exp(b_Intercept + b_EmotionSad),
+    m_neutral = exp(b_Intercept + b_SexMale),
+    m_disgust = exp(b_Intercept + b_SexMale + b_EmotionDisgust + `b_EmotionDisgust:SexMale`),
+    m_fear = exp(b_Intercept + b_SexMale + b_EmotionFear + `b_EmotionFear:SexMale`),
+    m_anger = exp(b_Intercept + b_SexMale + b_EmotionAnger + `b_EmotionAnger:SexMale`),
+    m_happy = exp(b_Intercept + b_SexMale + b_EmotionHappy + `b_EmotionHappy:SexMale`),
+    m_sad = exp(b_Intercept + b_SexMale + b_EmotionSad + `b_EmotionSad:SexMale`)
+  ) %>%
+  select(f_anger, f_disgust, f_fear, f_neutral, f_happy, f_sad, 
+         m_anger, m_disgust, m_fear, m_neutral, m_happy, m_sad)
+
+# Convert to long format for analysis
+draws_long <- f0_bm_draws %>%
+  mutate(.draw = row_number()) %>%
+  pivot_longer(
+    cols = -`.draw`,
+    names_to = "condition",
+    values_to = "F0"
+  ) %>%
+  separate(condition, into = c("Sex", "Emotion"), sep = "_") %>%
+  mutate(
+    Sex = if_else(Sex == "f", "Female", "Male"),
+    Emotion = str_to_title(Emotion)
+  )
+
+# Calculate condition means with credible intervals
+f0_summary <- draws_long %>%
+  group_by(Sex, Emotion) %>%
+  summarise(
+    Estimate = mean(F0),
+    Est.Error = sd(F0),
+    Q5 = quantile(F0, 0.025),
+    Q10 = quantile(F0, 0.10),
+    Q90 = quantile(F0, 0.90),
+    Q95 = quantile(F0, 0.975),
+    .groups = "drop"
+  ) %>%
+  arrange(Sex, Emotion)
+```
+
+```{r emotion-effects-calculation}
+# Calculate emotion effects within each sex (difference from Neutral, in Hz)
+diff_vs_neutral <- draws_long %>%
+  group_by(.draw, Sex) %>%
+  mutate(
+    F0_neutral = F0[Emotion == "Neutral"],
+    diff_vs_neutral = F0 - F0_neutral
+  ) %>%
+  ungroup() %>%
+  group_by(Sex, Emotion) %>%
+  summarise(
+    mean_diff = mean(diff_vs_neutral),
+    q10 = quantile(diff_vs_neutral, 0.10),
+    q90 = quantile(diff_vs_neutral, 0.90),
+    q5 = quantile(diff_vs_neutral, 0.025),
+    q95 = quantile(diff_vs_neutral, 0.975),
+    .groups = "drop"
+  ) %>%
+  arrange(Sex, Emotion)
+```
+
+```{r sex-differences-calculation}
+# Calculate sex differences within each emotion (Male − Female, in Hz)
+sex_diffs <- draws_long %>%
+  group_by(.draw, Emotion) %>%
+  summarise(
+    F0_Female = F0[Sex == "Female"],
+    F0_Male = F0[Sex == "Male"],
+    .groups = "drop"
+  ) %>%
+  mutate(diff_M_minus_F = F0_Male - F0_Female) %>%
+  group_by(Emotion) %>%
+  summarise(
+    mean_diff = mean(diff_M_minus_F),
+    q10 = quantile(diff_M_minus_F, 0.10),
+    q90 = quantile(diff_M_minus_F, 0.90),
+    q5 = quantile(diff_M_minus_F, 0.025),
+    q95 = quantile(diff_M_minus_F, 0.975),
+    .groups = "drop"
+  ) %>%
+  arrange(Emotion)
+```
+
+#### Condition Means
+
+@tbl-condition-means presents the predicted mean F0 for each Emotion × Sex combination. Female speakers exhibited higher F0 than males across all emotions, consistent with anatomical differences in vocal fold morphology.
+
+```{r}
+#| label: tbl-condition-means
+#| tbl-cap: "Predicted mean F0 (Hz) by emotion and sex with 80% and 95% credible intervals"
+
+# Format the f0_summary table
+condition_table <- f0_summary %>%
+  select(Sex, Emotion, Estimate, Q10, Q90, Q5, Q95) %>%
+  mutate(across(where(is.numeric), ~round(.x, 1)))
+
+colnames(condition_table) <- c("Sex", "Emotion", "Mean F0", 
+                                "80% CI Lower", "80% CI Upper",
+                                "95% CI Lower", "95% CI Upper")
+
+kable(condition_table, digits = 1) %>%
+  kable_styling(full_width = FALSE)
+```
+
+#### Emotion Effects Within Sex
+
+@tbl-emotion-effects shows how each emotion modulates F0 relative to Neutral speech, separately for each sex. Positive values indicate F0 increases; negative values indicate decreases. The credible intervals quantify the uncertainty in these effect estimates.
+
+```{r}
+#| label: tbl-emotion-effects
+#| tbl-cap: "Emotion effects on F0 (Hz)"
+#| results: asis
+#| tbl-pos: "H"
+
+library(kableExtra)
+
+emotion_effects_table <- diff_vs_neutral %>%
+  select(Sex, Emotion, mean_diff, q10, q90, q5, q95) %>%
+  mutate(across(where(is.numeric), round, 1))
+
+colnames(emotion_effects_table) <- c(
+  "Sex",
+  "Emotion",
+  "\\makecell{Mean \\\\ Difference}",
+  "\\makecell{80\\% CI \\\\ Lower}",
+  "\\makecell{80\\% CI \\\\ Upper}",
+  "\\makecell{95\\% CI \\\\ Lower}",
+  "\\makecell{95\\% CI \\\\ Upper}"
+)
+
+kable(
+  emotion_effects_table,
+  format = "latex",
+  booktabs = TRUE,
+  escape = FALSE
+) %>%
+  kable_styling(
+    latex_options = c("HOLD_position", "scale_down")
+  )
+
+```
+
+@fig-emotion-sex-interaction visualizes these emotion effects, revealing the pattern of emotional modulation for male and female speakers. Parallel lines would indicate similar emotional modulation across sexes, while diverging patterns suggest sex-specific differences in emotional expression.
+
+```{r}
+#| label: fig-emotion-sex-interaction
+#| fig-cap: "Interaction between emotion and sex: F0 change relative to Neutral. Error bars represent 80% credible intervals."
+#| fig-width: 10
+#| fig-height: 6
+#| fig-align: center
+#| fig-pos: "H"
+
+diff_vs_neutral %>%
+  filter(Emotion != "Neutral") %>%
+  ggplot(aes(x = Emotion, y = mean_diff, color = Sex, group = Sex)) +
+  geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+  geom_line(linewidth = 1) +
+  geom_point(size = 3) +
+  geom_errorbar(aes(ymin = q10, ymax = q90), width = 0.2, linewidth = 0.8) +
+  scale_color_manual(values = c("Female" = "#E78AC3", "Male" = "#8DA0CB")) +
+  labs(
+    title = "Emotion Effects on F0 by Sex",
+    x = "Emotion",
+    y = "Change in F0 relative to Neutral (Hz)",
+    color = "Speaker Sex"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+    legend.position = "top",
+    axis.text.x = element_text(angle = 45, hjust = 1)
+  )
+```
+
+#### Sex Differences Across Emotions
+
+@tbl-sex-differences presents the male-female F0 difference for each emotion. Negative values indicate females have higher F0 than males. These results show whether the baseline sex difference varies across emotional contexts.
+
+```{r}
+#| label: tbl-sex-differences
+#| tbl-cap: "Sex differences in F0 (Hz; Male − Female) by emotion, with 80% and 95% credible intervals"
+
+# Format the sex_diffs table
+sex_diff_table <- sex_diffs %>%
+  select(Emotion, mean_diff, q10, q90, q5, q95) %>%
+  mutate(across(where(is.numeric), ~round(.x, 1)))
+
+colnames(sex_diff_table) <- c("Emotion", "Mean Difference", 
+                               "80% CI Lower", "80% CI Upper",
+                               "95% CI Lower", "95% CI Upper")
+
+kable(sex_diff_table, digits = 1) %>%
+  kable_styling(full_width = FALSE)
+```
+
+### Posterior Distributions of Mean F0
+
+@fig-posterior-f0 displays the posterior distributions of mean F0 for each emotion-sex combination. The distributions represent the uncertainty about the true mean F0 for each condition, with wider distributions indicating greater uncertainty. The figure reveals both the substantial baseline difference between male and female speakers, and patterns of emotional modulation within each sex.
+
+```{r}
+#| label: fig-posterior-f0
+#| fig-cap: "Posterior distributions of mean F0 by emotion and speaker sex"
+#| fig-width: 12
+#| fig-height: 8
+#| fig-align: center
+
+# Plot using the draws_long data
+draws_long %>%
+  mutate(Emotion = str_to_title(Emotion)) %>%
+  ggplot(aes(F0, Emotion, fill = Emotion)) +
+  stat_halfeye() +
+  facet_grid(cols = vars(Sex), scales = "free_x") +
+  scale_fill_brewer(palette = "Set3") +
+  labs(
+    title = "Posterior Distributions of Mean F0 by Emotion and Sex",
+    x = "Mean F0 (Hz)",
+    y = "Emotion"
+  ) +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    plot.title = element_text(hjust = 0.5, face = "bold", size = 14),
+    strip.text = element_text(face = "bold", size = 12)
+  )
+```
+
+## Discussion
+
+All emotions caused mean F0 to increase across speakers, but the magnitude of this effect varied between emotions. The pattern observed is consistent with previously-mentioned arousal-based theories of emotional prosody, where studies found that speech produced in high-arousal emotions (e.g. anger, fear, and happiness) produce more substantial F0 increases relative to neutral speech than low-arousal emotions (e.g. disgust and sadness). Reflecting this, large pitch increases were observed for high-arousal emotions: anger caused F0 to rise by \~61 Hz in females (95% CI \[56, 67\]), and \~46 Hz in males (95% CI \[43, 50\]); fear by \~52 Hz in females (95% CI \[47, 57\]), and \~32 Hz in males (95% CI \[29, 36\]); and happiness by \~59 Hz in females (95% CI \[54, 65\]), and \~35 Hz in males (95% CI \[31, 38\]). Smaller changes were found for low-arousal emotions: disgust caused F0 to rise by \~7 Hz in females (95% CI \[3, 12\]), and \~19 Hz in males (95% CI \[16, 22\]); and sadness by 5 Hz in females (95% CI \[0, 10\]), and 12 Hz in males (95% CI \[8, 15\]).
+
+Males were found to possess substantially lower average F0 values than females when speaking neutrally, with a baseline difference of \~53 Hz (95% CI \[49, 56\]), due to anatomical differences between males and females. However, the magnitude of this gap varied across emotions, reflecting sex-dependent differences in pitch variation across emotional states. For high-arousal emotions, females displayed larger pitch increases than males: for anger, female F0 rose by \~15 Hz more than for males; for fear female F0 rose by \~20 Hz more than in males; and for happiness, \~25 Hz more than males. Inspecting the interaction term confirms the observed differences for fear (80% CI \[-0.054, -0.012\]; 95% CI \[-0.065, -0.002\]) and happiness (80% CI \[-0.068, -0.027\]; 95% CI \[-0.08, -0.016\]). For anger, no reliable difference was found at either an 80% confidence interval (\[-0.014, 0.027\]), or at 95% interval (\[-0.026, 0.04\]).
+
+For low-arousal emotions, this trend reversed, with males displaying larger pitch increases. For disgust, male pitch rose by \~12 Hz more than females; and for sadness, pitch rose by \~7 Hz more than for females. Interaction terms confirm sex-dependent differences in pitch modulation for disgust (80% CI \[0.065, 0.107\]; 95% CI \[0.054, 0.119\]) and sadness (80% CI \[0.032, 0.073\]; 95% CI \[0.021, 0.085\]).
+
+Due to the study's constraints, including limited control over confounding factors affecting F0 (described in the following section), the observed associations should not be interpreted as evidence of causality. To draw definitive conclusions, further investigation is required.
+
+## Limitations and future work
+
+The dataset used consists of posed emotional speech produced by actors trained to exaggerate and therefore the results cannot be generalized to spontaneous, natural speech.
+
+Additionally, it is important to mention that examining the intensity of each emotion lies beyond the scope of this study, so the results are only a comparison between emotional states and not between intensities of each emotion. Because intensity can modulate F0 independently of emotion category, examining graded emotional levels represents an important direction for future research.
+
+Furthermore, this study is restricted to mean F0 as means of emotional expression, although there are more acoustic parameters that interact with F0 to convey emotion in speech, such as timbre, voice quality and formant frequencies. Incorporating these features would allow for a more complete characterization of emotional prosody.
+
+Finally, only biological sex was considered as a demographic factor. Other sources of speaker variability, including age, social background and hormonal state may modulate emotional expression. Future work should systematically examine how these factors interact to shape F0 patterns in emotional speech.
+
+## References
+
+::: {#refs}
+:::
