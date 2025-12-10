@@ -382,7 +382,7 @@ Emotion was coded to capture F0 differences relative to a **Neutral** reference 
 
 #### Distributional Assumptions
 
-A **log-normal distribution** was assumed for the model family, meaning that F0 is modeled as following a lognormal distribution. This is equivalent to assuming that log(F0) follows a normal distribution. During model fitting, coefficient values were identified that maximized the probability of the observed data under the assumed model. The model estimates effects on the log scale internally, but predictions are automatically transformed to the original Hz scale.
+A **log-normal distribution** was assumed for the model family, meaning that F0 is modeled as following a lognormal distribution. This is equivalent to assuming that log(F0) follows a normal distribution. During model fitting, coefficient values were identified that maximized the probability of the observed data under the assumed model.
 
 ```{r model-fitting}
 #| echo: true
